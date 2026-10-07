@@ -37,4 +37,4 @@ SOURCE_TEST: Final = "test"
 
 CARD_URL: Final = f"/{DOMAIN}/pm-intercom-card.js"
 
-PLATFORMS: Final = ["binary_sensor", "event", "sensor"]
+PLATFORMS: Final = ["binary_sensor", "button", "event", "sensor"]

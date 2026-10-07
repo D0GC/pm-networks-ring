@@ -30,6 +30,7 @@ Sie hängen über die MAC-Adresse am bestehenden Gerät „Haustür“.
 | `event.haustur_klingeln_live` | Ereignis `ring` bei jedem Klingeln. Die Attribute nennen Quelle (`push`, `abfrage`, `test`) und Verzögerung. |
 | `binary_sensor.haustur_klingelt` | Nach dem Klingeln 30 Sekunden lang `on`. Geeignet für PM Panel Studio (`ereignis_ausloeser`). |
 | `sensor.haustur_intercom_audio` | `bereit` oder `gespraech`. |
+| `button.haustur_tur_offnen` | Öffnet die Haustür über die Intercom. Übernimmt die ID des Knopfs der offiziellen Ring-Integration. |
 | `binary_sensor.haustur_push_verbindung` | Diagnose: Push-Empfang aktiv, Zähler, Abfragestatus. |
 | `sensor.haustur_letzte_push_meldung` | Diagnose: Kategorie der zuletzt empfangenen Ring-Nachricht. |
 
@@ -42,7 +43,7 @@ Zusätzlich gibt es das Bus-Ereignis `pm_ring_intercom_ding` und den Dienst `pm_
 2. Home Assistant neu starten.
 3. Einstellungen → Geräte & Dienste → *PM Ring Intercom* hinzufügen. Mit dem Ring-Konto anmelden und den Bestätigungscode eingeben.
 
-Die offizielle Ring-Integration bleibt unverändert bestehen. Türöffner, Lautstärken und Batterie kommen weiterhin von dort.
+Die offizielle Ring-Integration bleibt für die übrigen Ring-Geräte bestehen. Für die Intercom liefert sie nur noch Lautstärken, Batterie und Signal; Klingeln und Türöffner kommen aus PM Ring Intercom.
 
 ## Umstellung von VisioGong
 

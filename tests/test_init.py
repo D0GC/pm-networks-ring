@@ -31,6 +31,7 @@ def _intercom() -> MagicMock:
     dev.kind = "intercom_handset_audio"
     dev.device_id = "649a63d2e852"
     dev.async_history = AsyncMock(return_value=[])
+    dev.async_open_door = AsyncMock(return_value=True)
     return dev
 
 
@@ -236,3 +237,23 @@ async def test_push_failure_keeps_polling(hass: HomeAssistant, freezer: FrozenDa
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert len(events) == 1
+
+
+async def test_open_door_button(hass: HomeAssistant) -> None:
+    """Der Knopf öffnet die Haustür über die Intercom, eine Ablehnung wird gemeldet."""
+    import pytest
+
+    from homeassistant.exceptions import HomeAssistantError
+
+    intercom = _intercom()
+    await _setup(hass, intercom)
+    await hass.services.async_call(
+        "button", "press", {"entity_id": "button.haustur_open_door"}, blocking=True
+    )
+    intercom.async_open_door.assert_awaited_once()
+
+    intercom.async_open_door.return_value = False
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            "button", "press", {"entity_id": "button.haustur_open_door"}, blocking=True
+        )

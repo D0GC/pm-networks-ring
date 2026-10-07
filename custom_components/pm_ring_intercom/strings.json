@@ -79,6 +79,11 @@
           "gespraech": "Call active"
         }
       }
+    },
+    "button": {
+      "tuer_oeffnen": {
+        "name": "Open door"
+      }
     }
   },
   "services": {

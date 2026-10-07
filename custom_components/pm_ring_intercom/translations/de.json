@@ -84,6 +84,11 @@
           "gespraech": "Gespräch aktiv"
         }
       }
+    },
+    "button": {
+      "tuer_oeffnen": {
+        "name": "Tür öffnen"
+      }
     }
   },
   "services": {
