@@ -1,0 +1,95 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ring-Anmeldung",
+        "description": "Die Integration meldet sich als eigener Client bei Ring an. Er erscheint im Control Center als „PMNetwork-HomeControl“.",
+        "data": {
+          "username": "E-Mail-Adresse",
+          "password": "Passwort"
+        }
+      },
+      "2fa": {
+        "title": "Bestätigungscode",
+        "description": "Ring hat einen Bestätigungscode per SMS oder E-Mail gesendet.",
+        "data": {
+          "otp": "Code"
+        }
+      },
+      "intercom": {
+        "title": "Intercom auswählen",
+        "data": {
+          "intercom_id": "Intercom"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Anmeldung abgelehnt.",
+      "invalid_2fa": "Code ungültig.",
+      "cannot_connect": "Ring ist nicht erreichbar."
+    },
+    "abort": {
+      "already_configured": "Diese Intercom ist bereits eingerichtet.",
+      "no_intercom": "Im Konto wurde keine Ring Intercom gefunden.",
+      "cannot_connect": "Ring ist nicht erreichbar.",
+      "reauth_successful": "Anmeldung erneuert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Optionen",
+        "data": {
+          "poll_interval": "Abfrageintervall als Rückfallebene (0 = aus)",
+          "ring_duration": "Dauer „Klingelt“",
+          "dedup_window": "Zeitfenster für Duplikate"
+        },
+        "data_description": {
+          "poll_interval": "Fragt die Ring-Historie ab, falls kein Push ankommt. Mindestens 10 Sekunden.",
+          "ring_duration": "So lange bleibt der Sensor „Klingelt“ eingeschaltet.",
+          "dedup_window": "Ein weiteres Klingeln innerhalb dieses Fensters wird nicht erneut gemeldet."
+        }
+      }
+    }
+  },
+  "entity": {
+    "event": {
+      "klingeln_live": {
+        "name": "Klingeln live",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Klingeln"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "klingelt": {
+        "name": "Klingelt"
+      },
+      "push_verbindung": {
+        "name": "Push-Verbindung"
+      }
+    },
+    "sensor": {
+      "letzte_push_meldung": {
+        "name": "Letzte Push-Meldung"
+      },
+      "intercom_audio": {
+        "name": "Intercom-Audio",
+        "state": {
+          "bereit": "Bereit",
+          "gespraech": "Gespräch aktiv"
+        }
+      }
+    }
+  },
+  "services": {
+    "klingeln_simulieren": {
+      "name": "Klingeln simulieren",
+      "description": "Löst ein Test-Klingeln aus, um Automationen und das Panel zu prüfen."
+    }
+  }
+}

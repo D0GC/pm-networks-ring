@@ -1,0 +1,15 @@
+{
+  "domain": "pm_ring_intercom",
+  "name": "PM Ring Intercom",
+  "after_dependencies": ["ring"],
+  "codeowners": ["@D0GC"],
+  "config_flow": true,
+  "dependencies": ["frontend", "http", "websocket_api"],
+  "documentation": "https://github.com/D0GC/pm-networks-ring",
+  "integration_type": "device",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/D0GC/pm-networks-ring/issues",
+  "loggers": ["custom_components.pm_ring_intercom"],
+  "requirements": ["ring-doorbell>=0.9.12"],
+  "version": "1.0.0"
+}

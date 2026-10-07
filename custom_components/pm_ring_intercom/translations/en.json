@@ -1,0 +1,90 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ring login",
+        "description": "The integration logs in to Ring as its own client.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "2fa": {
+        "title": "Verification code",
+        "description": "Ring sent a verification code by SMS or email.",
+        "data": {
+          "otp": "Code"
+        }
+      },
+      "intercom": {
+        "title": "Select intercom",
+        "data": {
+          "intercom_id": "Intercom"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login rejected.",
+      "invalid_2fa": "Invalid code.",
+      "cannot_connect": "Cannot reach Ring."
+    },
+    "abort": {
+      "already_configured": "This intercom is already configured.",
+      "no_intercom": "No Ring Intercom found in this account.",
+      "cannot_connect": "Cannot reach Ring.",
+      "reauth_successful": "Login renewed."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "poll_interval": "Fallback poll interval (0 = off)",
+          "ring_duration": "Ringing duration",
+          "dedup_window": "Duplicate window"
+        }
+      }
+    }
+  },
+  "entity": {
+    "event": {
+      "klingeln_live": {
+        "name": "Ding live",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "ring": "Ring"
+            }
+          }
+        }
+      }
+    },
+    "binary_sensor": {
+      "klingelt": {
+        "name": "Ringing"
+      },
+      "push_verbindung": {
+        "name": "Push connection"
+      }
+    },
+    "sensor": {
+      "letzte_push_meldung": {
+        "name": "Last push message"
+      },
+      "intercom_audio": {
+        "name": "Intercom audio",
+        "state": {
+          "bereit": "Ready",
+          "gespraech": "Call active"
+        }
+      }
+    }
+  },
+  "services": {
+    "klingeln_simulieren": {
+      "name": "Simulate ding",
+      "description": "Fires a test ding to check automations and the panel."
+    }
+  }
+}
