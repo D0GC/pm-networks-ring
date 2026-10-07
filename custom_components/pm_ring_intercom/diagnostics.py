@@ -22,6 +22,7 @@ async def async_get_config_entry_diagnostics(
         },
         "optionen": dict(entry.options),
         "push_aktiv": hub.listener_started,
+        "push_fehler": hub.last_push_error,
         "push_nachrichten": hub.push_count,
         "klingeln": hub.ding_count,
         "letztes_klingeln": hub.last_ding.as_event_data() if hub.last_ding else None,

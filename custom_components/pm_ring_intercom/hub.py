@@ -40,7 +40,7 @@ from .parser import KIND_DING, ParsedPush, matches_intercom, parse_push, redact
 
 _LOGGER = logging.getLogger(__name__)
 
-LISTENER_WATCHDOG = timedelta(minutes=5)
+LISTENER_WATCHDOG = timedelta(minutes=2)
 
 
 @dataclass
@@ -127,6 +127,7 @@ class IntercomHub:
         self.recent_pushes: deque[dict[str, Any]] = deque(maxlen=20)
         self.last_poll: datetime | None = None
         self.last_poll_error: str | None = None
+        self.last_push_error: str | None = None
         self._seen_ids: deque[str] = deque(maxlen=50)
         self._poll_seeded = False
         self._unsubs: list[CALLBACK_TYPE] = []
@@ -158,7 +159,11 @@ class IntercomHub:
     # ------------------------------------------------------------------ Ablauf
     async def async_start(self) -> None:
         """Push-Empfang und Abfrage starten."""
-        await self._async_start_listener()
+        # Push im Hintergrund starten: Ein Fehler bei Google/Ring darf die
+        # Abfrage als Rückfallebene nicht verhindern.
+        self.entry.async_create_background_task(
+            self.hass, self._async_start_listener(), "pm_ring_intercom Push-Start"
+        )
         if self.poll_interval:
             await self._async_poll(seed=True)
             self._unsubs.append(
@@ -190,10 +195,16 @@ class IntercomHub:
     async def _async_start_listener(self) -> None:
         try:
             started = await self.listener.start(timeout=30)
-        except (RingError, TimeoutError) as err:
-            _LOGGER.warning("Push-Empfang von Ring konnte nicht starten: %s", err)
+        except Exception as err:  # noqa: BLE001 - FCM wirft auch RuntimeError
+            self.last_push_error = f"{type(err).__name__}: {err}"
+            _LOGGER.warning(
+                "Push-Empfang von Ring konnte nicht starten, neuer Versuch in %s: %s",
+                LISTENER_WATCHDOG,
+                self.last_push_error,
+            )
             started = False
         if started:
+            self.last_push_error = None
             _LOGGER.info(
                 "Push-Empfang für %s aktiv (FCM-Token registriert)", self.intercom.name
             )

@@ -54,7 +54,7 @@ def _push(category: str, ding_id: str = "1") -> dict:
     }
 
 
-async def _setup(hass: HomeAssistant, intercom: MagicMock):
+async def _setup(hass: HomeAssistant, intercom: MagicMock, *, push_error: Exception | None = None):
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Haustür",
@@ -68,6 +68,8 @@ async def _setup(hass: HomeAssistant, intercom: MagicMock):
     ring.devices.return_value.other = [intercom]
 
     async def _start(self, timeout=10):
+        if push_error:
+            raise push_error
         self.started = True
         return True
 
@@ -210,3 +212,27 @@ async def test_unload(hass: HomeAssistant) -> None:
     """Entladen funktioniert."""
     entry = await _setup(hass, _intercom())
     assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_push_failure_keeps_polling(hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
+    """Scheitert die FCM-Registrierung, läuft die Einrichtung trotzdem und die Abfrage meldet."""
+    intercom = _intercom()
+    entry = await _setup(
+        hass,
+        intercom,
+        push_error=RuntimeError("Unable to establish subscription with Google Cloud Messaging."),
+    )
+    assert entry.state.value == "loaded"
+    state = hass.states.get("binary_sensor.haustur_push_connection")
+    assert state.state == "off"
+    assert "RuntimeError" in state.attributes["push_fehler"]
+
+    events = []
+    hass.bus.async_listen(EVENT_DING, events.append)
+    intercom.async_history.return_value = [
+        {"id": 777, "kind": "ding", "created_at": dt_util.utcnow()}
+    ]
+    freezer.tick(timedelta(seconds=16))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(events) == 1

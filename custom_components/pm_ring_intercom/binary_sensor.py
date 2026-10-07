@@ -121,4 +121,5 @@ class IntercomPushConnected(IntercomEntity, BinarySensorEntity):
             "abfrageintervall_s": hub.poll_interval,
             "letzte_abfrage": hub.last_poll.isoformat() if hub.last_poll else None,
             "abfragefehler": hub.last_poll_error,
+            "push_fehler": hub.last_push_error,
         }
