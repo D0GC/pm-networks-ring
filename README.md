@@ -107,6 +107,12 @@ logger:
 
 Meldet `binary_sensor.haustur_push_verbindung` das Klingeln dauerhaft nur unter `klingeln_nur_per_abfrage`, stellt Ring der Intercom keinen Push für diesen Client zu. Dann trägt die Abfrage allein.
 
+## Symbol und Logo
+
+Die Integration bringt Symbol und Logo im PM-Networks-Design selbst mit (`custom_components/pm_ring_intercom/brand/`,
+ab Home Assistant 2025.3). Sichtbar werden sie nach einem Neustart von Home Assistant; gegebenenfalls den
+Browser-Cache leeren.
+
 ## Entwicklung
 
 ```bash
