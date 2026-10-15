@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -50,6 +51,8 @@ class RuntimeData:
 
     ring: Ring
     hub: IntercomHub
+    # Optionen beim Einrichten; nur eine Abweichung davon lädt den Eintrag neu.
+    options: dict[str, Any]
 
 
 type PMRingIntercomConfigEntry = ConfigEntry[RuntimeData]
@@ -93,6 +96,8 @@ def create_auth(
 
     @callback
     def _token_updated(new_token: dict[str, Any]) -> None:
+        # Schreibt nur die Entry-Daten; das löst kein Neuladen aus
+        # (siehe _async_entry_updated).
         if entry is not None:
             hass.config_entries.async_update_entry(
                 entry, data={**entry.data, CONF_TOKEN: new_token}
@@ -134,15 +139,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: PMRingIntercomConfigEntr
         single_intercom=len(intercoms) == 1,
         listen_credentials=entry.data.get(CONF_LISTEN_CREDENTIALS),
     )
-    entry.runtime_data = RuntimeData(ring=ring, hub=hub)
+    entry.runtime_data = RuntimeData(
+        ring=ring, hub=hub, options=deepcopy(dict(entry.options))
+    )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     await hub.async_start()
-    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
+    entry.async_on_unload(entry.add_update_listener(_async_entry_updated))
     return True
 
 
-async def _async_options_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_entry_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Nur bei geänderten Optionen neu laden.
+
+    Der Update-Listener läuft bei jeder Änderung des Eintrags, also auch beim
+    Token-Refresh von Ring (etwa alle 4 Stunden) und beim Speichern neuer
+    FCM-Zugangsdaten. Ein Neuladen würde jedes Mal den Push-Empfang neu starten.
+    """
+    runtime = getattr(entry, "runtime_data", None)
+    if runtime is not None and dict(entry.options) == runtime.options:
+        _LOGGER.debug("Eintrag aktualisiert, Optionen unverändert: kein Neuladen")
+        return
     await hass.config_entries.async_reload(entry.entry_id)
 
 

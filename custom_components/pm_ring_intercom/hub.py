@@ -15,7 +15,7 @@ from ring_doorbell.exceptions import AuthenticationError, RingError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
-from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.event import async_call_later, async_track_time_interval
 from homeassistant.util import dt as dt_util
 
 from .const import (
@@ -40,7 +40,52 @@ from .parser import KIND_DING, ParsedPush, matches_intercom, parse_push, redact
 
 _LOGGER = logging.getLogger(__name__)
 
-LISTENER_WATCHDOG = timedelta(minutes=2)
+# Prüfintervall der Push-Überwachung. Die Prüfung liest nur Zustände, ohne Netzwerk.
+LISTENER_WATCHDOG = timedelta(seconds=30)
+# Zusätzliche Prüfung kurz nach jedem Start: Eine Giftnachricht beendet den
+# FCM-Client innerhalb von Sekunden nach der Anmeldung.
+LISTENER_EARLY_CHECK = 15
+# Ist der FCM-Client so lange nicht angemeldet, gilt er als hängend.
+LISTENER_CONNECT_TIMEOUT = timedelta(minutes=3)
+# Wartezeit vor erneutem Start nach wiederholten Ausfällen (verdoppelt sich).
+RESTART_BACKOFF_BASE = timedelta(seconds=30)
+RESTART_BACKOFF_MAX = timedelta(minutes=15)
+# So viele Ausfälle des Empfängers in Folge, ohne dass er dazwischen
+# STABLE_RUNTIME lang lief, lösen eine Neuregistrierung bei FCM aus.
+REREGISTER_AFTER_FAILURES = 2
+# Mindestabstand zwischen zwei Neuregistrierungen (verdoppelt sich).
+REREGISTER_BACKOFF_BASE = timedelta(minutes=30)
+REREGISTER_BACKOFF_MAX = timedelta(hours=12)
+# Nach so langer ungestörter Laufzeit gelten Ausfälle als ausgestanden.
+STABLE_RUNTIME = timedelta(minutes=10)
+STABLE_RUNTIME_REREGISTER = timedelta(hours=6)
+
+# Zustände von firebase_messaging.FcmPushClientRunState, in denen der Client
+# nichts mehr empfängt. Abgleich über den Namen, damit eine geänderte
+# Bibliothek nicht zum Absturz führt.
+_RECEIVER_DEAD_STATES = frozenset({"STOPPING", "STOPPED"})
+_FCM_LOGGER = "firebase_messaging"
+
+
+class _FcmErrorCapture(logging.Handler):
+    """Merkt sich die letzte Fehlermeldung von firebase_messaging.
+
+    Der FCM-Client beendet sich bei einem Fehler nur mit einer Logzeile. Die
+    erste Zeile davon wird als verständlicher Grund für `push_fehler`
+    übernommen. Sie enthält keine Zugangsdaten (nur Ausnahmetext).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(logging.ERROR)
+        self.last_error: str | None = None
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            text = record.getMessage()
+        except Exception:  # noqa: BLE001 - Logging darf nie stören
+            return
+        first_line = text.strip().splitlines()[0] if text.strip() else ""
+        self.last_error = first_line[:160] or None
 
 
 @dataclass
@@ -113,12 +158,7 @@ class IntercomHub:
         self.ring = ring
         self.intercom = intercom
         self.single_intercom = single_intercom
-        self.listener = _RawListener(
-            self,
-            ring,
-            listen_credentials,
-            self._listen_credentials_updated,
-        )
+        self.listener = self._create_listener(listen_credentials)
         self.last_ding: DingInfo | None = None
         self.last_push: ParsedPush | None = None
         self.last_push_received: datetime | None = None
@@ -128,11 +168,37 @@ class IntercomHub:
         self.last_poll: datetime | None = None
         self.last_poll_error: str | None = None
         self.last_push_error: str | None = None
+        self.last_push_error_at: datetime | None = None
+        self.push_connected_since: datetime | None = None
+        self.watchdog_restarts = 0
+        self.reregistrations = 0
         self._seen_ids: deque[str] = deque(maxlen=50)
         self._poll_seeded = False
         self._unsubs: list[CALLBACK_TYPE] = []
         self._poll_lock = asyncio.Lock()
+        # Push-Überwachung
+        self._listener_lock = asyncio.Lock()
+        self._stopping = False
+        self._started_at: datetime | None = None
+        self._not_connected_since: datetime | None = None
+        self._next_start_attempt: datetime | None = None
+        self._restart_attempts = 0
+        self._receiver_failures = 0
+        self._reregister_count = 0
+        self._last_reregister: datetime | None = None
+        self._reported_connected: bool | None = None
+        self._cancel_early_check: CALLBACK_TYPE | None = None
+        self._fcm_errors = _FcmErrorCapture()
         self.audio = AudioSessions(hass, self)
+
+    def _create_listener(self, credentials: dict[str, Any] | None) -> _RawListener:
+        """Listener anlegen; ohne Zugangsdaten registriert er sich neu bei FCM."""
+        return _RawListener(
+            self,
+            self.ring,
+            credentials,
+            self._listen_credentials_updated,
+        )
 
     # ------------------------------------------------------------------ Optionen
     @property
@@ -153,16 +219,61 @@ class IntercomHub:
 
     @property
     def listener_started(self) -> bool:
-        """Push-Empfang aktiv."""
+        """Startmerker von ring_doorbell.
+
+        Bleibt True, auch wenn sich der FCM-Client inzwischen beendet hat.
+        Für den tatsächlichen Zustand `push_connected` verwenden.
+        """
         return bool(self.listener.started)
+
+    @property
+    def push_connected(self) -> bool:
+        """Push-Empfang tatsächlich aktiv: gestartet, lebt und bei FCM angemeldet."""
+        if not self.listener.started:
+            return False
+        receiver = getattr(self.listener, "_receiver", None)
+        if receiver is None:
+            # Unbekannter Aufbau der Bibliothek: dem Startmerker vertrauen.
+            return True
+        if self._receiver_failure(receiver) is not None:
+            return False
+        is_started = getattr(receiver, "is_started", None)
+        if not callable(is_started):
+            return True
+        try:
+            return bool(is_started())
+        except Exception:  # noqa: BLE001 - Bibliotheksänderung darf nicht stören
+            return True
+
+    @staticmethod
+    def _receiver_failure(receiver: Any) -> str | None:
+        """Grund, warum der FCM-Client nichts mehr empfängt, sonst None.
+
+        Liest nur Attribute von firebase_messaging.FcmPushClient, jeweils per
+        getattr, damit eine geänderte Bibliothek nicht zum Absturz führt.
+        """
+        state = getattr(getattr(receiver, "run_state", None), "name", None)
+        if state in _RECEIVER_DEAD_STATES:
+            return f"FCM-Client hat sich beendet (Zustand {state})"
+        if getattr(receiver, "do_listen", True) is False:
+            return "FCM-Client hat den Empfang eingestellt"
+        tasks = getattr(receiver, "tasks", None)
+        if isinstance(tasks, (list, tuple)) and tasks:
+            try:
+                if all(task.done() for task in tasks):
+                    return "Empfangsschleife des FCM-Clients beendet"
+            except Exception:  # noqa: BLE001 - nur Zusatzprüfung
+                return None
+        return None
 
     # ------------------------------------------------------------------ Ablauf
     async def async_start(self) -> None:
         """Push-Empfang und Abfrage starten."""
+        logging.getLogger(_FCM_LOGGER).addHandler(self._fcm_errors)
         # Push im Hintergrund starten: Ein Fehler bei Google/Ring darf die
         # Abfrage als Rückfallebene nicht verhindern.
         self.entry.async_create_background_task(
-            self.hass, self._async_start_listener(), "pm_ring_intercom Push-Start"
+            self.hass, self._async_initial_start(), "pm_ring_intercom Push-Start"
         )
         if self.poll_interval:
             await self._async_poll(seed=True)
@@ -185,45 +296,256 @@ class IntercomHub:
 
     async def async_stop(self) -> None:
         """Alles beenden."""
+        self._stopping = True
         for unsub in self._unsubs:
             unsub()
         self._unsubs.clear()
+        self._cancel_early()
+        logging.getLogger(_FCM_LOGGER).removeHandler(self._fcm_errors)
         await self.audio.async_close_all()
-        if self.listener.started:
-            await self.listener.stop()
+        await self._async_stop_listener()
 
-    async def _async_start_listener(self) -> None:
+    async def _async_initial_start(self) -> None:
+        async with self._listener_lock:
+            await self._async_start_listener()
+
+    async def _async_stop_listener(self) -> None:
+        """Listener anhalten; Fehler der Bibliothek beim Anhalten ignorieren."""
+        try:
+            await self.listener.stop()
+        except Exception as err:  # noqa: BLE001 - Anhalten darf nie scheitern
+            _LOGGER.debug("Push-Empfang ließ sich nicht sauber anhalten: %s", err)
+
+    async def _async_start_listener(self) -> bool:
+        """Push-Empfang starten. Aufrufer hält `_listener_lock`."""
+        if self._stopping:
+            return False
+        self._fcm_errors.last_error = None
         try:
             started = await self.listener.start(timeout=30)
         except Exception as err:  # noqa: BLE001 - FCM wirft auch RuntimeError
-            self.last_push_error = f"{type(err).__name__}: {err}"
+            self._set_push_error(f"{type(err).__name__}: {err}")
+            started = False
+        else:
+            if not started:
+                self._set_push_error(
+                    self._fcm_errors.last_error
+                    or "Anmeldung des Push-Empfangs bei FCM oder Ring fehlgeschlagen"
+                )
+
+        now = dt_util.utcnow()
+        if self._stopping:
+            await self._async_stop_listener()
+            return False
+        if started:
+            self._started_at = now
+            self._not_connected_since = None
+            self._next_start_attempt = None
+            _LOGGER.info(
+                "Push-Empfang für %s gestartet (FCM-Token registriert)", self.intercom.name
+            )
+            # Eine Giftnachricht beendet den Client binnen Sekunden; früh nachsehen.
+            self._cancel_early()
+            self._cancel_early_check = async_call_later(
+                self.hass, LISTENER_EARLY_CHECK, self._async_early_check
+            )
+        else:
+            # Halb gestartete Empfänger-Tasks nicht weiterlaufen lassen.
+            await self._async_stop_listener()
+            self._restart_attempts += 1
+            delay = self._restart_delay()
+            self._next_start_attempt = now + delay
             _LOGGER.warning(
-                "Push-Empfang von Ring konnte nicht starten, neuer Versuch in %s: %s",
-                LISTENER_WATCHDOG,
+                "Push-Empfang von Ring konnte nicht starten, neuer Versuch in %s s: %s",
+                int(delay.total_seconds()),
                 self.last_push_error,
             )
-            started = False
-        if started:
-            self.last_push_error = None
-            _LOGGER.info(
-                "Push-Empfang für %s aktiv (FCM-Token registriert)", self.intercom.name
-            )
+        self._send_status()
+        return started
+
+    def _restart_delay(self) -> timedelta:
+        """Wartezeit vor dem nächsten Start; der erste Neustart erfolgt sofort."""
+        if self._restart_attempts <= 1:
+            return timedelta(0)
+        delay = RESTART_BACKOFF_BASE * (2 ** (self._restart_attempts - 2))
+        return min(delay, RESTART_BACKOFF_MAX)
+
+    def _reregister_allowed(self, now: datetime) -> bool:
+        """Neuregistrierung fällig und nicht durch den Mindestabstand gesperrt."""
+        if self._receiver_failures < REREGISTER_AFTER_FAILURES:
+            return False
+        if self._last_reregister is None:
+            return True
+        wait = min(
+            REREGISTER_BACKOFF_BASE * (2 ** max(self._reregister_count - 1, 0)),
+            REREGISTER_BACKOFF_MAX,
+        )
+        return now - self._last_reregister >= wait
+
+    @callback
+    def _cancel_early(self) -> None:
+        if self._cancel_early_check:
+            self._cancel_early_check()
+            self._cancel_early_check = None
+
+    async def _async_early_check(self, _now: datetime) -> None:
+        self._cancel_early_check = None
+        await self._async_watchdog(_now)
+
+    async def _async_watchdog(self, _now: datetime | None = None) -> None:
+        """Empfänger prüfen, bei Ausfall neu starten oder neu registrieren."""
+        if self._stopping or self._listener_lock.locked():
+            return
+        async with self._listener_lock:
+            now = dt_util.utcnow()
+            if self.listener.started:
+                reason, counts = self._check_receiver(now)
+                if reason is None:
+                    self._send_status_if_changed()
+                    return
+                await self._async_handle_failure(now, reason, counts_for_reregister=counts)
+
+            if self._reregister_allowed(now):
+                await self._async_reregister(now)
+                return
+            if self._next_start_attempt is not None and now < self._next_start_attempt:
+                self._send_status_if_changed()
+                return
+            _LOGGER.info("Push-Überwachung: neuer Startversuch des Push-Empfangs")
+            await self._async_start_listener()
+
+    def _check_receiver(self, now: datetime) -> tuple[str | None, bool]:
+        """Zustand des laufenden Empfängers bewerten.
+
+        Rückgabe: Ausfallgrund (None = in Ordnung) und ob der Ausfall für eine
+        Neuregistrierung zählt. Ein hängender Verbindungsaufbau zählt nicht,
+        weil er auf Netzprobleme deutet, nicht auf eine Giftnachricht.
+        """
+        receiver = getattr(self.listener, "_receiver", None)
+        if receiver is None:
+            return None, False
+        if (failure := self._receiver_failure(receiver)) is not None:
+            if detail := self._fcm_errors.last_error:
+                failure = f"{failure}: {detail}"
+            return failure, True
+
+        is_started = getattr(receiver, "is_started", None)
+        connected = True
+        if callable(is_started):
+            try:
+                connected = bool(is_started())
+            except Exception:  # noqa: BLE001 - Bibliotheksänderung darf nicht stören
+                connected = True
+        if not connected:
+            if self._not_connected_since is None:
+                self._not_connected_since = now
+            elif now - self._not_connected_since >= LISTENER_CONNECT_TIMEOUT:
+                minutes = int(LISTENER_CONNECT_TIMEOUT.total_seconds() // 60)
+                return f"FCM-Client seit über {minutes} Minuten nicht angemeldet", False
+            return None, False
+
+        self._not_connected_since = None
+        if self.push_connected_since is None:
+            self.push_connected_since = now
+        if self._started_at is not None:
+            runtime = now - self._started_at
+            if runtime >= STABLE_RUNTIME:
+                # Ausfälle sind ausgestanden: Backoff und Fehler zurücksetzen.
+                self._restart_attempts = 0
+                self._receiver_failures = 0
+                if self.last_push_error is not None:
+                    self.last_push_error = None
+                    self._send_status()
+            if runtime >= STABLE_RUNTIME_REREGISTER:
+                self._reregister_count = 0
+        return None, False
+
+    async def _async_handle_failure(
+        self, now: datetime, reason: str, *, counts_for_reregister: bool
+    ) -> None:
+        """Toten Empfänger anhalten und Ausfall vermerken."""
+        runtime = (
+            int((now - self._started_at).total_seconds()) if self._started_at else None
+        )
+        self._set_push_error(reason)
+        self.watchdog_restarts += 1
+        self._restart_attempts += 1
+        if counts_for_reregister:
+            self._receiver_failures += 1
+        delay = self._restart_delay()
+        self._next_start_attempt = now + delay
+        _LOGGER.warning(
+            "Push-Überwachung: Empfang von Ring ausgefallen (%s; %s s nach dem Start). "
+            "Push-Empfang wird angehalten und in %s s neu gestartet, Klingeln kommt "
+            "bis dahin nur über die Abfrage",
+            reason,
+            runtime,
+            int(delay.total_seconds()),
+        )
+        self._cancel_early()
+        await self._async_stop_listener()
+        self._started_at = None
+        self._not_connected_since = None
+        self.push_connected_since = None
         self._send_status()
 
-    async def _async_watchdog(self, _now: datetime) -> None:
-        if not self.listener.started:
-            _LOGGER.info("Push-Empfang inaktiv, neuer Startversuch")
-            await self._async_start_listener()
+    async def _async_reregister(self, now: datetime) -> None:
+        """Gespeicherte FCM-Zugangsdaten verwerfen und neu registrieren.
+
+        Eine Nachricht, an der die Entschlüsselung scheitert, wird nie bestätigt
+        und bei jeder Anmeldung erneut zugestellt. Mit einer neuen Registrierung
+        verfällt die alte samt dieser Nachricht. ring_doorbell registriert sich
+        ohne Zugangsdaten neu bei FCM, meldet die neuen Daten über den Callback
+        und trägt das neue Token per Sitzungs-PATCH bei Ring ein.
+        """
+        self._reregister_count += 1
+        self.reregistrations += 1
+        self._last_reregister = now
+        self._receiver_failures = 0
+        _LOGGER.warning(
+            "Push-Überwachung: Push-Empfang fällt wiederholt kurz nach dem Start aus "
+            "(zuletzt: %s). Gespeicherte FCM-Zugangsdaten werden verworfen, "
+            "Neuregistrierung bei FCM und Ring (Versuch %s)",
+            self.last_push_error,
+            self._reregister_count,
+        )
+        await self._async_stop_listener()
+        self._discard_listen_credentials()
+        self.listener = self._create_listener(None)
+        if await self._async_start_listener():
+            _LOGGER.warning(
+                "Push-Überwachung: Neuregistrierung abgeschlossen, neues FCM-Token bei "
+                "Ring angemeldet"
+            )
+
+    @callback
+    def _discard_listen_credentials(self) -> None:
+        if CONF_LISTEN_CREDENTIALS not in self.entry.data:
+            return
+        data = {k: v for k, v in self.entry.data.items() if k != CONF_LISTEN_CREDENTIALS}
+        self.hass.config_entries.async_update_entry(self.entry, data=data)
+
+    @callback
+    def _set_push_error(self, reason: str) -> None:
+        self.last_push_error = reason
+        self.last_push_error_at = dt_util.utcnow()
 
     @callback
     def _listen_credentials_updated(self, creds: dict[str, Any]) -> None:
+        """Neue FCM-Zugangsdaten speichern (löst kein Neuladen aus)."""
         self.hass.config_entries.async_update_entry(
             self.entry, data={**self.entry.data, CONF_LISTEN_CREDENTIALS: creds}
         )
 
     @callback
     def _send_status(self) -> None:
+        self._reported_connected = self.push_connected
         async_dispatcher_send(self.hass, SIGNAL_STATUS.format(self.entry.entry_id))
+
+    @callback
+    def _send_status_if_changed(self) -> None:
+        if self.push_connected != self._reported_connected:
+            self._send_status()
 
     # ------------------------------------------------------------------ Push
     @callback
