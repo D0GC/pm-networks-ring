@@ -21,8 +21,14 @@ async def async_get_config_entry_diagnostics(
             "kind": hub.intercom.kind,
         },
         "optionen": dict(entry.options),
-        "push_aktiv": hub.listener_started,
+        "push_aktiv": hub.push_connected,
+        "push_gestartet_laut_ring_doorbell": hub.listener_started,
         "push_fehler": hub.last_push_error,
+        "push_fehler_um": hub.last_push_error_at.isoformat()
+        if hub.last_push_error_at
+        else None,
+        "push_neustarts": hub.watchdog_restarts,
+        "push_neuregistrierungen": hub.reregistrations,
         "push_nachrichten": hub.push_count,
         "klingeln": hub.ding_count,
         "letztes_klingeln": hub.last_ding.as_event_data() if hub.last_ding else None,

@@ -107,8 +107,8 @@ class IntercomPushConnected(IntercomEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        """Push-Empfang aktiv."""
-        return self.hub.listener_started
+        """Push-Empfang tatsächlich aktiv (FCM-Client lebt und ist angemeldet)."""
+        return self.hub.push_connected
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -122,4 +122,13 @@ class IntercomPushConnected(IntercomEntity, BinarySensorEntity):
             "letzte_abfrage": hub.last_poll.isoformat() if hub.last_poll else None,
             "abfragefehler": hub.last_poll_error,
             "push_fehler": hub.last_push_error,
+            "push_fehler_um": _iso(hub.last_push_error_at),
+            "letzte_push_nachricht": _iso(hub.last_push_received),
+            "push_verbunden_seit": _iso(hub.push_connected_since),
+            "push_neustarts": hub.watchdog_restarts,
+            "push_neuregistrierungen": hub.reregistrations,
         }
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
