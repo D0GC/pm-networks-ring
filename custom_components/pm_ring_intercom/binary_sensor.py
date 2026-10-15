@@ -17,6 +17,7 @@ from homeassistant.helpers.event import async_call_later
 
 from . import PMRingIntercomConfigEntry
 from .const import SIGNAL_DING, SIGNAL_PUSH, SIGNAL_STATUS
+from . import fcm_patch
 from .entity import IntercomEntity
 from .hub import DingInfo, IntercomHub
 
@@ -127,6 +128,10 @@ class IntercomPushConnected(IntercomEntity, BinarySensorEntity):
             "push_verbunden_seit": _iso(hub.push_connected_since),
             "push_neustarts": hub.watchdog_restarts,
             "push_neuregistrierungen": hub.reregistrations,
+            "push_stille_ausfaelle": hub.silent_failures,
+            "push_ring_anmeldung_um": _iso(hub.last_resubscribe),
+            "push_ring_anmeldung_ok": hub.last_resubscribe_ok,
+            "push_verworfene_nachrichten": fcm_patch.STATISTIK["verworfen"],
         }
 
 

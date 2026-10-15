@@ -21,7 +21,10 @@ Das neue Merkmal `ding_call` in der Diagnose spricht dafür, dass Ring das Kling
 2. **Abfrage als Rückfallebene.** Alle 15 Sekunden (einstellbar) wird die Historie der Intercom gelesen. Ein Klingeln, das per Push ausblieb, wird so spätestens nach etwa 15 Sekunden gemeldet. Die offizielle Integration braucht dafür rund 60 Sekunden.
 3. **Entprellung.** Push und Abfrage melden dasselbe Klingeln nur einmal (über die Ding-ID und ein Zeitfenster von 90 Sekunden).
 4. **Push-Überwachung.** Alle 30 Sekunden und 15 Sekunden nach jedem Start wird der FCM-Client selbst geprüft, nicht nur der Startmerker von `ring_doorbell`. Hat er sich beendet oder ist er länger als 3 Minuten nicht angemeldet, wird der Empfang neu gestartet (bei wiederholten Ausfällen mit wachsender Wartezeit bis 15 Minuten). Fällt er zweimal hintereinander aus, ohne dazwischen 10 Minuten störungsfrei zu laufen, typischerweise durch eine nicht entschlüsselbare Nachricht, die nach jeder Anmeldung erneut zugestellt wird, verwirft die Integration die FCM-Zugangsdaten und registriert sich neu bei FCM und Ring. Zwischen zwei Neuregistrierungen liegen mindestens 30 Minuten, danach jeweils doppelt so lange (bis 12 Stunden).
-5. **Kein Neuladen beim Token-Refresh.** Der Eintrag wird nur neu geladen, wenn sich die Optionen ändern. Token-Refresh und neue FCM-Zugangsdaten werden nur gespeichert.
+5. **Anmeldung bei Ring stündlich erneuern.** Die Intercom schickt keine Bewegungsmeldungen, ein stiller Push-Kanal fällt daher erst beim nächsten Klingeln auf. Damit Ring nach Sitzungs- oder Tokenwechseln weiter zustellt, wird das FCM-Token stündlich per neuer Sitzung und Geräte-PATCH erneut angemeldet. Der Empfang läuft dabei weiter.
+6. **Selbstheilung bei stillem Ausfall.** Findet nur die Abfrage ein Klingeln, obwohl der Push als verbunden gilt, wird das Token sofort neu bei Ring angemeldet. Passiert das innerhalb von 24 Stunden erneut, registriert sich die Integration vollständig neu bei FCM und Ring (frühestens 30 Minuten nach der letzten Neuregistrierung).
+7. **Härtung von firebase_messaging.** `dh` und `salt` werden nach Namen gelesen und die Base64-Auffüllung ergänzt (Vorbild: Upstream-PRs sdb9696/firebase-messaging #37 und #43). Eine trotzdem nicht auswertbare Nachricht wird verworfen und bestätigt, statt den FCM-Client zu beenden. Die Härtung wirkt prozessweit, also auch für die offizielle Ring-Integration.
+8. **Kein Neuladen beim Token-Refresh.** Der Eintrag wird nur neu geladen, wenn sich die Optionen ändern. Token-Refresh und neue FCM-Zugangsdaten werden nur gespeichert.
 
 ## Entitäten
 
@@ -33,7 +36,7 @@ Sie hängen über die MAC-Adresse am bestehenden Gerät „Haustür“.
 | `binary_sensor.haustur_klingelt` | Nach dem Klingeln 30 Sekunden lang `on`. Geeignet für PM Panel Studio (`ereignis_ausloeser`). |
 | `sensor.haustur_intercom_audio` | `bereit` oder `gespraech`. |
 | `button.haustur_tur_offnen` | Öffnet die Haustür über die Intercom. Übernimmt die ID des Knopfs der offiziellen Ring-Integration. |
-| `binary_sensor.haustur_push_verbindung` | Diagnose: Push-Empfang tatsächlich aktiv, Zähler, Abfragestatus, `push_fehler`, `letzte_push_nachricht`, `push_neustarts`, `push_neuregistrierungen`. |
+| `binary_sensor.haustur_push_verbindung` | Diagnose: Push-Empfang tatsächlich aktiv, Zähler, Abfragestatus, `push_fehler`, `letzte_push_nachricht`, `push_neustarts`, `push_neuregistrierungen`, `push_stille_ausfaelle`, `push_ring_anmeldung_um`, `push_ring_anmeldung_ok`, `push_verworfene_nachrichten`. |
 | `sensor.haustur_letzte_push_meldung` | Diagnose: Kategorie der zuletzt empfangenen Ring-Nachricht. |
 
 Zusätzlich gibt es das Bus-Ereignis `pm_ring_intercom_ding` und den Dienst `pm_ring_intercom.klingeln_simulieren`.

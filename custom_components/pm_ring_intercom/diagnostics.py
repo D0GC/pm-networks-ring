@@ -6,7 +6,7 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
-from . import PMRingIntercomConfigEntry
+from . import PMRingIntercomConfigEntry, fcm_patch
 
 
 async def async_get_config_entry_diagnostics(
@@ -29,6 +29,11 @@ async def async_get_config_entry_diagnostics(
         else None,
         "push_neustarts": hub.watchdog_restarts,
         "push_neuregistrierungen": hub.reregistrations,
+        "push_stille_ausfaelle": hub.silent_failures,
+        "push_ring_anmeldung_um": hub.last_resubscribe.isoformat() if hub.last_resubscribe else None,
+        "push_ring_anmeldung_ok": hub.last_resubscribe_ok,
+        "fcm_gehaertet": hub.fcm_hardened,
+        "fcm_verworfen": dict(fcm_patch.STATISTIK),
         "push_nachrichten": hub.push_count,
         "klingeln": hub.ding_count,
         "letztes_klingeln": hub.last_ding.as_event_data() if hub.last_ding else None,
