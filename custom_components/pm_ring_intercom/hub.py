@@ -35,6 +35,7 @@ from .const import (
     SOURCE_POLL,
     SOURCE_PUSH,
 )
+from . import fcm_patch
 from .audio import AudioSessions
 from .parser import KIND_DING, ParsedPush, matches_intercom, parse_push, redact
 
@@ -59,6 +60,14 @@ REREGISTER_BACKOFF_MAX = timedelta(hours=12)
 # Nach so langer ungestörter Laufzeit gelten Ausfälle als ausgestanden.
 STABLE_RUNTIME = timedelta(minutes=10)
 STABLE_RUNTIME_REREGISTER = timedelta(hours=6)
+# Das Push-Token wird Ring regelmäßig neu mitgeteilt (Sitzung und Geräte-PATCH).
+# Ring stellt sonst nach Sitzungs- oder Tokenwechseln still nichts mehr zu, ohne
+# dass der FCM-Client davon etwas merkt.
+RESUBSCRIBE_INTERVAL = timedelta(hours=1)
+# Ein Klingeln, das nur die Abfrage findet, obwohl der Push als verbunden gilt,
+# ist ein stiller Ausfall. Wiederholt er sich innerhalb dieses Zeitraums trotz
+# erneuter Anmeldung, folgt eine Neuregistrierung.
+SILENT_FAILURE_WINDOW = timedelta(hours=24)
 
 # Zustände von firebase_messaging.FcmPushClientRunState, in denen der Client
 # nichts mehr empfängt. Abgleich über den Namen, damit eine geänderte
@@ -189,6 +198,12 @@ class IntercomHub:
         self._reported_connected: bool | None = None
         self._cancel_early_check: CALLBACK_TYPE | None = None
         self._fcm_errors = _FcmErrorCapture()
+        # Stille Ausfälle: Push verbunden, Klingeln kommt trotzdem nur per Abfrage
+        self.silent_failures = 0
+        self._last_silent_failure: datetime | None = None
+        self.last_resubscribe: datetime | None = None
+        self.last_resubscribe_ok: bool | None = None
+        self.fcm_hardened = fcm_patch.anwenden()
         self.audio = AudioSessions(hass, self)
 
     def _create_listener(self, credentials: dict[str, Any] | None) -> _RawListener:
@@ -291,6 +306,14 @@ class IntercomHub:
                 self._async_watchdog,
                 LISTENER_WATCHDOG,
                 name=f"{self.entry.title} Push-Überwachung",
+            )
+        )
+        self._unsubs.append(
+            async_track_time_interval(
+                self.hass,
+                self._async_periodic_resubscribe,
+                RESUBSCRIBE_INTERVAL,
+                name=f"{self.entry.title} Push-Anmeldung bei Ring",
             )
         )
 
@@ -547,6 +570,78 @@ class IntercomHub:
         if self.push_connected != self._reported_connected:
             self._send_status()
 
+    # ------------------------------------------------------------------ Anmeldung bei Ring
+    async def _async_periodic_resubscribe(self, _now: datetime) -> None:
+        await self._async_resubscribe("regelmäßige Erneuerung")
+
+    async def _async_resubscribe(self, reason: str) -> bool:
+        """Push-Token Ring erneut mitteilen: neue Sitzung und Geräte-PATCH.
+
+        Ändert am FCM-Client nichts. Rückgabe: ob Ring die Anmeldung angenommen hat.
+        """
+        if self._stopping or self._listener_lock.locked() or not self.push_connected:
+            return False
+        token = getattr(self.listener, "fcm_token", None)
+        add = getattr(self.listener, "add_subscription_to_ring", None)
+        if not token or not callable(add):
+            return False
+        async with self._listener_lock:
+            ok = False
+            try:
+                await self.ring.async_create_session()
+                await add(token)
+                ok = bool(getattr(self.listener, "subscribed", True))
+            except AuthenticationError:
+                self.entry.async_start_reauth(self.hass)
+            except Exception as err:  # noqa: BLE001 - Netzfehler dürfen nichts beenden
+                _LOGGER.warning("Push-Anmeldung bei Ring nicht erneuert (%s): %s", reason, err)
+            self.last_resubscribe = dt_util.utcnow()
+            self.last_resubscribe_ok = ok
+            if ok:
+                _LOGGER.debug("Push-Token bei Ring erneut angemeldet (%s)", reason)
+            else:
+                _LOGGER.warning("Ring hat die erneute Push-Anmeldung abgelehnt (%s)", reason)
+            self._send_status()
+            return ok
+
+    async def _async_handle_silent_failure(self) -> None:
+        """Klingeln kam nur per Abfrage, obwohl der Push als verbunden galt.
+
+        Erst wird das Token bei Ring neu angemeldet. Passiert es innerhalb von
+        SILENT_FAILURE_WINDOW erneut, ist die Registrierung selbst unbrauchbar:
+        dann vollständige Neuregistrierung bei FCM und Ring.
+        """
+        now = dt_util.utcnow()
+        wiederholt = (
+            self._last_silent_failure is not None
+            and now - self._last_silent_failure < SILENT_FAILURE_WINDOW
+        )
+        self.silent_failures += 1
+        self._last_silent_failure = now
+        self._set_push_error("Klingeln kam nur über die Abfrage, obwohl der Push verbunden war")
+        if not wiederholt:
+            _LOGGER.warning(
+                "Push-Überwachung: Klingeln kam nur über die Abfrage, obwohl der Push "
+                "verbunden war. Push-Token wird bei Ring neu angemeldet"
+            )
+            await self._async_resubscribe("Klingeln nur per Abfrage")
+            return
+        if self._listener_lock.locked() or self._stopping:
+            return
+        if (
+            self._last_reregister is not None
+            and now - self._last_reregister < REREGISTER_BACKOFF_BASE
+        ):
+            await self._async_resubscribe("Klingeln nur per Abfrage, Neuregistrierung gesperrt")
+            return
+        _LOGGER.warning(
+            "Push-Überwachung: wiederholt Klingeln nur über die Abfrage trotz erneuter "
+            "Anmeldung. Push-Empfang wird bei FCM und Ring neu registriert"
+        )
+        async with self._listener_lock:
+            await self._async_reregister(now)
+        self._send_status()
+
     # ------------------------------------------------------------------ Push
     @callback
     def handle_raw_push(self, notification: dict[str, Any]) -> None:
@@ -681,6 +776,12 @@ class IntercomHub:
                 ding.created_at,
                 ding.delay,
             )
+            if self.push_connected:
+                self.entry.async_create_background_task(
+                    self.hass,
+                    self._async_handle_silent_failure(),
+                    "pm_ring_intercom stiller Push-Ausfall",
+                )
         else:
             _LOGGER.info("Klingeln erfasst über %s (%s s)", ding.source, ding.delay)
 
