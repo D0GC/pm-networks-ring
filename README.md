@@ -20,6 +20,8 @@ Das neue Merkmal `ding_call` in der Diagnose spricht dafür, dass Ring das Kling
 1. **Eigener Push-Empfang.** Die Integration meldet sich als eigener Client bei Ring an („PMNetwork-HomeControl“ im Control Center) und registriert ein eigenes FCM-Token. Jede Rohnachricht wird tolerant ausgewertet. Alles mit *ding*, *intercom* oder *call* in Kategorie oder Subtyp gilt als Klingeln, *unlock* und *motion* nicht.
 2. **Abfrage als Rückfallebene.** Alle 15 Sekunden (einstellbar) wird die Historie der Intercom gelesen. Ein Klingeln, das per Push ausblieb, wird so spätestens nach etwa 15 Sekunden gemeldet. Die offizielle Integration braucht dafür rund 60 Sekunden.
 3. **Entprellung.** Push und Abfrage melden dasselbe Klingeln nur einmal (über die Ding-ID und ein Zeitfenster von 90 Sekunden).
+4. **Push-Überwachung.** Alle 30 Sekunden und 15 Sekunden nach jedem Start wird der FCM-Client selbst geprüft, nicht nur der Startmerker von `ring_doorbell`. Hat er sich beendet oder ist er länger als 3 Minuten nicht angemeldet, wird der Empfang neu gestartet (bei wiederholten Ausfällen mit wachsender Wartezeit bis 15 Minuten). Fällt er zweimal hintereinander aus, ohne dazwischen 10 Minuten störungsfrei zu laufen, typischerweise durch eine nicht entschlüsselbare Nachricht, die nach jeder Anmeldung erneut zugestellt wird, verwirft die Integration die FCM-Zugangsdaten und registriert sich neu bei FCM und Ring. Zwischen zwei Neuregistrierungen liegen mindestens 30 Minuten, danach jeweils doppelt so lange (bis 12 Stunden).
+5. **Kein Neuladen beim Token-Refresh.** Der Eintrag wird nur neu geladen, wenn sich die Optionen ändern. Token-Refresh und neue FCM-Zugangsdaten werden nur gespeichert.
 
 ## Entitäten
 
@@ -31,7 +33,7 @@ Sie hängen über die MAC-Adresse am bestehenden Gerät „Haustür“.
 | `binary_sensor.haustur_klingelt` | Nach dem Klingeln 30 Sekunden lang `on`. Geeignet für PM Panel Studio (`ereignis_ausloeser`). |
 | `sensor.haustur_intercom_audio` | `bereit` oder `gespraech`. |
 | `button.haustur_tur_offnen` | Öffnet die Haustür über die Intercom. Übernimmt die ID des Knopfs der offiziellen Ring-Integration. |
-| `binary_sensor.haustur_push_verbindung` | Diagnose: Push-Empfang aktiv, Zähler, Abfragestatus. |
+| `binary_sensor.haustur_push_verbindung` | Diagnose: Push-Empfang tatsächlich aktiv, Zähler, Abfragestatus, `push_fehler`, `letzte_push_nachricht`, `push_neustarts`, `push_neuregistrierungen`. |
 | `sensor.haustur_letzte_push_meldung` | Diagnose: Kategorie der zuletzt empfangenen Ring-Nachricht. |
 
 Zusätzlich gibt es das Bus-Ereignis `pm_ring_intercom_ding` und den Dienst `pm_ring_intercom.klingeln_simulieren`.
@@ -104,6 +106,8 @@ logger:
   logs:
     custom_components.pm_ring_intercom: debug
 ```
+
+Eingriffe der Push-Überwachung stehen als Warnung im Protokoll (`Push-Überwachung: …`); `push_fehler` nennt den letzten Grund, etwa `FCM-Client hat sich beendet (Zustand STOPPING): Unknown error: Incorrect padding, …`. Der Wert wird nach 10 Minuten störungsfreiem Empfang gelöscht, `push_fehler_um` bleibt stehen.
 
 Meldet `binary_sensor.haustur_push_verbindung` das Klingeln dauerhaft nur unter `klingeln_nur_per_abfrage`, stellt Ring der Intercom keinen Push für diesen Client zu. Dann trägt die Abfrage allein.
 
