@@ -1,7 +1,19 @@
+<p align="center">
+  <a href="https://pm-networks.com"><img src="docs/images/banner.png" alt="PM Ring Intercom – Klingeln sofort erkennen, Intercom-Audio im Browser" width="100%"></a>
+</p>
+
+<p align="center">
+  <a href="https://pm-networks.com"><img src="https://img.shields.io/badge/Website-pm--networks.com-784295?style=flat-square" alt="Website pm-networks.com"></a>
+  <a href="https://hacs.xyz"><img src="https://img.shields.io/badge/HACS-Integration-443171?style=flat-square" alt="HACS Integration"></a>
+  <img src="https://img.shields.io/badge/Version-1.0.5-262252?style=flat-square" alt="Version 1.0.5">
+</p>
+
 # PM Ring Intercom
 
 Eigene Home-Assistant-Integration für die **Ring Intercom** an der Haustür (Siedle HT 511-01).
 Sie erfasst das Klingeln wieder sofort und stellt das **Intercom-Audio** für ein Gespräch über den Browser bereit.
+
+> **PM Networks:** weitere Integrationen und Apps für Home Assistant auf [pm-networks.com](https://pm-networks.com).
 
 Ausgangspunkt ist die Diagnose vom 07.10.2026: Die offizielle Ring-Integration meldet seit Ende September kein Klingeln der Intercom mehr. Das Entsperren kommt dagegen sekundengenau an.
 
@@ -126,3 +138,7 @@ Browser-Cache leeren.
 pip install pytest-homeassistant-custom-component
 pytest tests
 ```
+
+---
+
+<p align="center"><a href="https://pm-networks.com"><b>pm-networks.com</b></a> · <sub>© 2026 PM Networks</sub></p>
